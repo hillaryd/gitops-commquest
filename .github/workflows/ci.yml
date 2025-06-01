@@ -1,5 +1,4 @@
 name: Build Commquest Custom ERPNext Image
-
 on:
   push:
     branches:
@@ -101,6 +100,50 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }} # GITHUB_TOKEN has permissions to push to ghcr.io for your repo
+      
+      #vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv
+      # PUT THE DEBUG STEP RIGHT HERE  # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+      #vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv
+      - name: Debug Environment Variables
+        run: |
+          echo "Debug Info (immediately before Docker build):"
+          echo "--------------------------------------------------"
+          echo "Workflow Inputs:"
+          echo "  inputs.image_tag_suffix: ${{ inputs.image_tag_suffix }}"
+          echo "  inputs.image_name: ${{ inputs.image_name }}"
+          echo "  inputs.py_version: ${{ inputs.py_version }}"
+          echo "  inputs.nodejs_version: ${{ inputs.nodejs_version }}"
+          echo "  inputs.frappe_repo: ${{ inputs.frappe_repo }}"
+          echo "  inputs.frappe_version: ${{ inputs.frappe_version }}"
+          echo ""
+          echo "Variables from ci/build.env (potentially):"
+          echo "  env.REGISTRY (from build.env or global): ${{ env.REGISTRY }}"
+          echo "  env.PROJECT_NAMESPACE (from build.env or global): ${{ env.PROJECT_NAMESPACE }}"
+          echo "  env.IMAGE_NAME_PREFIX (from build.env or global): ${{ env.IMAGE_NAME_PREFIX }}"
+          echo "  env.IMAGE_BASE_NAME (from build.env or global): ${{ env.IMAGE_BASE_NAME }}"
+          echo "  env.FRAPPE_REPO (from build.env): ${{ env.FRAPPE_REPO }}"
+          echo "  env.FRAPPE_VERSION (from build.env): ${{ env.FRAPPE_VERSION }}"
+          echo "  env.PY_VERSION (from build.env): ${{ env.PY_VERSION }}"
+          echo "  env.NODEJS_VERSION (from build.env): ${{ env.NODEJS_VERSION }}"
+          echo ""
+          echo "Final effective variables passed to Docker build:"
+          echo "  env.FRAPPE_REPO_FINAL: ${{ env.FRAPPE_REPO_FINAL }}"
+          echo "  env.FRAPPE_VERSION_FINAL: ${{ env.FRAPPE_VERSION_FINAL }}"
+          echo "  env.PY_VERSION_FINAL: ${{ env.PY_VERSION_FINAL }}"        # <<< CHECK THIS VALUE
+          echo "  env.NODEJS_VERSION_FINAL: ${{ env.NODEJS_VERSION_FINAL }}" # <<< CHECK THIS VALUE
+          echo "  env.APPS_JSON_BASE64 (first 50 chars): $(echo ${{ env.APPS_JSON_BASE64 }} | cut -c 1-50)"
+          echo ""
+          echo "Image and Tagging variables:"
+          echo "  env.FINAL_IMAGE_NAME: ${{ env.FINAL_IMAGE_NAME }}"
+          echo "  env.IMAGE_TAG: ${{ env.IMAGE_TAG }}"
+          echo "  env.BUILD_DATE: ${{ env.BUILD_DATE }}"
+          echo "  env.COMMIT_SHA: ${{ env.COMMIT_SHA }}"
+          echo "  env.APPS_HASH: ${{ env.APPS_HASH }}"
+          echo "--------------------------------------------------"
+          # Optionally, print all env vars if still unsure:
+          # echo "--- All Environment Variables ---"
+          # env | sort
+          # echo "--- End Environment Variables ---"
 
       - name: Build and Push Docker Image
         uses: docker/build-push-action@v5
