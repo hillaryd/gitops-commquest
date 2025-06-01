@@ -1,56 +1,54 @@
-name: Build Image
+name: Build Commquest Custom ERPNext Image
 
 on:
   push:
     branches:
-      - main
+      - main 
     paths:
-      - 'ci/**'
+      - 'builds/**'       
+      - 'ci/apps.json'    
+      - 'ci/build.env'    
       - '.github/workflows/ci.yml'
-
   workflow_dispatch:
     inputs:
-      image:
-        description: Image name
+      image_tag_suffix:
+        description: 'Optional suffix for the image tag (e.g., -beta, -rc1)'
+        required: false
         type: string
-      version:
-        description: Image version tag
+      # Keeping original inputs for potential override, though build.env is primary
+      image_name:
+        description: 'Image name (e.g., custom-erpnext-commquest)'
+        required: false
         type: string
-      frappe-repo:
+      frappe_repo:
         description: Frappe repo
         type: string
-      frappe-version:
+        default: 'https://github.com/frappe/frappe'
+      frappe_version:
         description: Frappe branch
         type: string
-      py-version:
+        default: 'version-15'
+      py_version:
         description: Python version
         type: string
-      nodejs-version:
+        default: '3.11.9' 
+      nodejs_version:
         description: NodeJS version
         type: string
-      apps-json-base64:
-        description: base64 encoded string of apps.json
-        type: string
-      context:
-        description: kaniko context
-        type: string
-      dockerfile:
-        description: dockerfile path from context
-        type: string
-      registry-user:
-        description: registry username
-        required: false
+        default: '20.13.1' 
 
-    secrets:
-      REGISTRY_PASSWORD:
-        description: registry password
-        required: false
+env:
+  # Default values, can be overridden by ci/build.env or workflow inputs
+  REGISTRY: ghcr.io
+  PROJECT_NAMESPACE: ${{ github.repository_owner }} # Uses your GitHub username/org
+  IMAGE_NAME_PREFIX: commquest # Specific to this customer repo
+  IMAGE_BASE_NAME: custom-erpnext # Base name for the image
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout Repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -61,65 +59,70 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Generate version and cache key
-        id: version
+      - name: Generate Version Tag & Load Build Variables
+        id: vars
         run: |
-          # Use timestamp + short commit hash for version
-          VERSION=$(date +'%Y.%m.%d')-$(git rev-parse --short HEAD)
-          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          IMAGE_TAG_VERSION=$(date +'%Y%m%d')-$(git rev-parse --short HEAD)${{ inputs.image_tag_suffix }}
+          echo "IMAGE_TAG=$IMAGE_TAG_VERSION" >> $GITHUB_ENV
           echo "BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> $GITHUB_ENV
           echo "COMMIT_SHA=$(git rev-parse HEAD)" >> $GITHUB_ENV
           
-          # Generate cache key based on apps.json content to invalidate cache when apps change
+          # Load from ci/build.env, allowing workflow inputs to override if provided
+          # This sets them as environment variables for subsequent steps
+          if [ -f ./ci/build.env ]; then
+            echo "Sourcing ci/build.env..."
+            # Filter out comments and empty lines, then export
+            grep -v '^#' ./ci/build.env | grep -v '^\s*$' | while IFS= read -r line; do echo "$line" >> $GITHUB_ENV; done
+          fi
+
+          # Set Python and NodeJS versions from inputs if provided, else use env (from build.env or default)
+          echo "PY_VERSION_FINAL=${{ inputs.py_version || env.PY_VERSION }}" >> $GITHUB_ENV
+          echo "NODEJS_VERSION_FINAL=${{ inputs.nodejs_version || env.NODEJS_VERSION }}" >> $GITHUB_ENV
+          echo "FRAPPE_REPO_FINAL=${{ inputs.frappe_repo || env.FRAPPE_REPO }}" >> $GITHUB_ENV
+          echo "FRAPPE_VERSION_FINAL=${{ inputs.frappe_version || env.FRAPPE_VERSION }}" >> $GITHUB_ENV
+
+          # Prepare apps.json
+          if [ ! -f ./ci/apps.json ]; then
+            echo "Error: ci/apps.json not found!"
+            exit 1
+          fi
+          echo "APPS_JSON_BASE64=$(base64 -w 0 ./ci/apps.json)" >> $GITHUB_ENV
           APPS_HASH=$(sha256sum ./ci/apps.json | cut -d ' ' -f 1)
           echo "APPS_HASH=$APPS_HASH" >> $GITHUB_ENV
-          
-          # Update version.txt for future reference
-          echo "$VERSION" > ./ci/version.txt
-          git config --global user.name "GitHub Actions"
-          git config --global user.email "actions@github.com"
-          git add ./ci/version.txt
-          git commit -m "Update version to $VERSION" || echo "No changes to commit"
-          git push || echo "No changes to push"
 
-      - name: Source Build Env
-        id: source-build-env
-        run: |
-          cat ./ci/build.env >> $GITHUB_ENV
-          echo "" >> $GITHUB_ENV
-          echo "APPS_JSON_BASE64=$(base64 -w 0 ./ci/apps.json)" >> $GITHUB_ENV
+          # Construct final image name
+          FINAL_IMAGE_NAME="${{ env.IMAGE_NAME_PREFIX }}-${{ inputs.image_name || env.IMAGE_BASE_NAME }}"
+          echo "FINAL_IMAGE_NAME=$FINAL_IMAGE_NAME" >> $GITHUB_ENV
+
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
         with:
-          registry: ${{ inputs.registry || env.REGISTRY }}
-          username: ${{ inputs.registry-user || github.actor }}
-          password: ${{ secrets.REGISTRY_PASSWORD || secrets.GITHUB_TOKEN }}
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }} # GITHUB_TOKEN has permissions to push to ghcr.io for your repo
 
-      - uses: actions/checkout@v4
-        with:
-          repository: frappe/frappe_docker
-          path: builds
-
-      - name: Build and push
+      - name: Build and Push Docker Image
         uses: docker/build-push-action@v5
         with:
+          context: ./builds # Context is your local 'builds' directory
+          file: ./builds/Containerfile # Path to your local, modified Dockerfile
           push: true
-          context: builds
-          file: builds/${{ inputs.dockerfile || env.DOCKERFILE }}
           tags: |
-            ${{ inputs.registry || env.REGISTRY }}/${{ env.PROJECT_NAMESPACE || github.repository }}/${{ inputs.image || env.IMAGE }}:${{ inputs.version || env.VERSION }}
-            ${{ inputs.registry || env.REGISTRY }}/${{ env.PROJECT_NAMESPACE || github.repository }}/${{ inputs.image || env.IMAGE }}:latest
-          cache-from: type=gha,scope=${{ env.APPS_HASH }}
-          cache-to: type=gha,mode=max,scope=${{ env.APPS_HASH }}
+            ${{ env.REGISTRY }}/${{ env.PROJECT_NAMESPACE }}/${{ env.FINAL_IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+          cache-from: type=gha,scope=${{ env.APPS_HASH }}-${{ env.FINAL_IMAGE_NAME }}
+          cache-to: type=gha,mode=max,scope=${{ env.APPS_HASH }}-${{ env.FINAL_IMAGE_NAME }}
+          # Pass the PAT secret to the Docker build
+          secrets: |
+            gh_pat_secret_mount_point=${{ secrets.GH_PAT_PRIVATE_APPS }} # Make sure GH_PAT_PRIVATE_APPS is a repo secret
           build-args: |
-            "FRAPPE_PATH=${{ inputs.frappe-repo || env.FRAPPE_REPO }}"
-            "FRAPPE_BRANCH=${{ inputs.frappe-version || env.FRAPPE_VERSION }}"
-            "PYTHON_VERSION=${{ inputs.py-version || env.PY_VERSION }}"
-            "NODE_VERSION=${{ inputs.nodejs-version || env.NODEJS_VERSION }}"
-            "APPS_JSON_BASE64=${{ inputs.apps-json-base64 || env.APPS_JSON_BASE64 }}"
-            "CACHE_BUST=${{ env.BUILD_DATE }}"
+            "FRAPPE_PATH=${{ env.FRAPPE_REPO_FINAL }}"
+            "FRAPPE_BRANCH=${{ env.FRAPPE_VERSION_FINAL }}"
+            "PYTHON_VERSION=${{ env.PY_VERSION_FINAL }}"
+            "NODE_VERSION=${{ env.NODEJS_VERSION_FINAL }}"
+            "APPS_JSON_BASE64=${{ env.APPS_JSON_BASE64 }}"
+            "CACHE_BUST=${{ env.BUILD_DATE }}" # For cache busting if needed
           labels: |
             org.opencontainers.image.created=${{ env.BUILD_DATE }}
             org.opencontainers.image.revision=${{ env.COMMIT_SHA }}
-            org.opencontainers.image.version=${{ inputs.version || env.VERSION }}
+            org.opencontainers.image.version=${{ env.IMAGE_TAG }}

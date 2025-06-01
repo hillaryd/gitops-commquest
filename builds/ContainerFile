@@ -1,4 +1,4 @@
-ARG PYTHON_VERSION=3.11.6
+ARG PYTHON_VERSION=3.11.6 
 ARG DEBIAN_BASE=bookworm
 FROM python:${PYTHON_VERSION}-slim-${DEBIAN_BASE} AS base
 
@@ -7,7 +7,7 @@ COPY resources/nginx-entrypoint.sh /usr/local/bin/nginx-entrypoint.sh
 
 ARG WKHTMLTOPDF_VERSION=0.12.6.1-3
 ARG WKHTMLTOPDF_DISTRO=bookworm
-ARG NODE_VERSION=20.19.2
+ARG NODE_VERSION=20.19.2 
 ENV NVM_DIR=/home/frappe/.nvm
 ENV PATH=${NVM_DIR}/versions/node/v${NODE_VERSION}/bin/:${PATH}
 
@@ -20,24 +20,19 @@ RUN useradd -ms /bin/bash frappe \
     nginx \
     gettext-base \
     file \
-    # weasyprint dependencies
     libpango-1.0-0 \
     libharfbuzz0b \
     libpangoft2-1.0-0 \
     libpangocairo-1.0-0 \
-    # For backups
     restic \
     gpg \
-    # MariaDB
     mariadb-client \
     less \
-    # Postgres
     libpq-dev \
     postgresql-client \
-    # For healthcheck
     wait-for-it \
     jq \
-    # NodeJS
+    openssh-client \
     && mkdir -p ${NVM_DIR} \
     && curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.5/install.sh | bash \
     && . ${NVM_DIR}/nvm.sh \
@@ -47,20 +42,17 @@ RUN useradd -ms /bin/bash frappe \
     && nvm alias default v${NODE_VERSION} \
     && rm -rf ${NVM_DIR}/.cache \
     && echo 'export NVM_DIR="/home/frappe/.nvm"' >>/home/frappe/.bashrc \
-    && echo '[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"  # This loads nvm' >>/home/frappe/.bashrc \
-    && echo '[ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"  # This loads nvm bash_completion' >>/home/frappe/.bashrc \
-    # Install wkhtmltopdf with patched qt
+    && echo '[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"' >>/home/frappe/.bashrc \
+    && echo '[ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"' >>/home/frappe/.bashrc \
     && if [ "$(uname -m)" = "aarch64" ]; then export ARCH=arm64; fi \
     && if [ "$(uname -m)" = "x86_64" ]; then export ARCH=amd64; fi \
     && downloaded_file=wkhtmltox_${WKHTMLTOPDF_VERSION}.${WKHTMLTOPDF_DISTRO}_${ARCH}.deb \
     && curl -sLO https://github.com/wkhtmltopdf/packaging/releases/download/$WKHTMLTOPDF_VERSION/$downloaded_file \
     && apt-get install -y ./$downloaded_file \
     && rm $downloaded_file \
-    # Clean up
     && rm -rf /var/lib/apt/lists/* \
     && rm -fr /etc/nginx/sites-enabled/default \
     && pip3 install frappe-bench \
-    # Fixes for non-root nginx and logs to stdout
     && sed -i '/user www-data/d' /etc/nginx/nginx.conf \
     && ln -sf /dev/stdout /var/log/nginx/access.log && ln -sf /dev/stderr /var/log/nginx/error.log \
     && touch /run/nginx.pid \
@@ -76,17 +68,13 @@ FROM base AS builder
 
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends -y \
-    # For frappe framework
     wget \
-    #for building arm64 binaries
     libcairo2-dev \
     libpango1.0-dev \
     libjpeg-dev \
     libgif-dev \
     librsvg2-dev \
-    # For psycopg2
     libpq-dev \
-    # Other
     libffi-dev \
     liblcms2-dev \
     libldap2-dev \
@@ -99,13 +87,11 @@ RUN apt-get update \
     rlwrap \
     tk8.6-dev \
     cron \
-    # For pandas
     gcc \
     build-essential \
     libbz2-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# apps.json includes
 ARG APPS_JSON_BASE64
 RUN if [ -n "${APPS_JSON_BASE64}" ]; then \
     mkdir /opt/frappe && echo "${APPS_JSON_BASE64}" | base64 -d > /opt/frappe/apps.json; \
@@ -115,7 +101,24 @@ USER frappe
 
 ARG FRAPPE_BRANCH=version-15
 ARG FRAPPE_PATH=https://github.com/frappe/frappe
-RUN export APP_INSTALL_ARGS="" && \
+RUN \
+  # This --mount directive is for Docker BuildKit.
+  # It makes the secret identified by 'gh_pat_secret_id' in the CI workflow
+  # available at /run/secrets/gh_pat_secret_mount_point inside this RUN command.
+  # --mount=type=secret,id=gh_pat_secret_id,target=/run/secrets/gh_pat_secret_mount_point \
+  \
+  export GIT_CONFIG_URED=false && \
+  if [ -f /run/secrets/gh_pat_secret_mount_point ]; then \
+    echo "Configuring Git to use PAT for GitHub HTTPS access..." && \
+    git config --global url."https://oauth2:$(cat /run/secrets/gh_pat_secret_mount_point)@github.com/".insteadOf "https://github.com/" && \
+    export GIT_CONFIG_URED=true && \
+    echo "Git PAT configured." ; \
+  else \
+    echo "PAT secret not found or not mounted, proceeding without specific Git auth for private repos. Cloning private repos will likely fail." ; \
+  fi && \
+  \
+  # Proceed with bench init
+  export APP_INSTALL_ARGS="" && \
   if [ -n "${APPS_JSON_BASE64}" ]; then \
     export APP_INSTALL_ARGS="--apps_path=/opt/frappe/apps.json"; \
   fi && \
@@ -127,6 +130,16 @@ RUN export APP_INSTALL_ARGS="" && \
     --skip-redis-config-generation \
     --verbose \
     /home/frappe/frappe-bench && \
+  \
+  # Unset the Git configuration immediately after bench init/get-app is done
+  if [ "$GIT_CONFIG_URED" = true ]; then \
+    echo "Unsetting Git PAT configuration..." && \
+    git config --global --unset-all url."https://github.com/".insteadOf || true && \
+    git config --global --remove-section url."https://oauth2:$(cat /run/secrets/gh_pat_secret_mount_point)@github.com/" || true && \
+    echo "Git PAT unconfigured." ; \
+  fi && \
+  \
+  # Rest of the original command
   cd /home/frappe/frappe-bench && \
   echo "{}" > sites/common_site_config.json && \
   find apps -mindepth 1 -path "*/.git" | xargs rm -fr
@@ -139,6 +152,7 @@ COPY --from=builder --chown=frappe:frappe /home/frappe/frappe-bench /home/frappe
 
 WORKDIR /home/frappe/frappe-bench
 
+# Removed /sites/assets
 VOLUME [ \
   "/home/frappe/frappe-bench/sites", \
   "/home/frappe/frappe-bench/logs" \
