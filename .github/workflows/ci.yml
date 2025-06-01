@@ -61,26 +61,71 @@ jobs:
       - name: Generate Version Tag & Load Build Variables
         id: vars
         run: |
+          # --- Part 1: Load from ci/build.env into shell variables first ---
+          # And set them to GITHUB_ENV so subsequent STEPS can use them as env.VAR
+          # Initialize with empty strings or defaults if ci/build.env might be missing fields
+          BUILD_ENV_PY_VERSION=""
+          BUILD_ENV_NODEJS_VERSION=""
+          BUILD_ENV_FRAPPE_REPO=""
+          BUILD_ENV_FRAPPE_VERSION=""
+          # ... add others from build.env ...
+
+          if [ -f ./ci/build.env ]; then
+            echo "Sourcing ci/build.env..."
+            # Source into current shell and also into GITHUB_ENV
+            # Using a loop to handle potential spaces in values and ensure clean export
+            while IFS='=' read -r key value; do
+              # Skip comments and empty lines
+              [[ "$key" =~ ^\s*# || -z "$key" ]] && continue
+              # Trim whitespace from key and value (optional but good practice)
+              key=$(echo "$key" | xargs)
+              value=$(echo "$value" | xargs)
+              
+              echo "Read from build.env: $key=$value"
+              echo "$key=$value" >> $GITHUB_ENV # For subsequent steps
+              
+              # Also make available to current script via explicit shell vars
+              case "$key" in
+                PY_VERSION) BUILD_ENV_PY_VERSION="$value" ;;
+                NODEJS_VERSION) BUILD_ENV_NODEJS_VERSION="$value" ;;
+                FRAPPE_REPO) BUILD_ENV_FRAPPE_REPO="$value" ;;
+                FRAPPE_VERSION) BUILD_ENV_FRAPPE_VERSION="$value" ;;
+                # ... add other vars from build.env you need to make decisions on ...
+              esac
+            done < <(grep -v '^#' ./ci/build.env | grep -v '^\s*$') # Process lines from build.env
+          fi
+
+          # --- Part 2: Determine FINAL values using inputs as overrides ---
+          # Use shell parameter expansion for default values
+          FINAL_PY_VERSION="${{ inputs.py_version }}"
+          [ -z "$FINAL_PY_VERSION" ] && FINAL_PY_VERSION="$BUILD_ENV_PY_VERSION"
+          # Add a hardcoded default if both input and build.env are empty (optional)
+          [ -z "$FINAL_PY_VERSION" ] && FINAL_PY_VERSION="3.11.9" # Example hardcoded default
+
+          FINAL_NODEJS_VERSION="${{ inputs.nodejs_version }}"
+          [ -z "$FINAL_NODEJS_VERSION" ] && FINAL_NODEJS_VERSION="$BUILD_ENV_NODEJS_VERSION"
+          [ -z "$FINAL_NODEJS_VERSION" ] && FINAL_NODEJS_VERSION="20.13.1"
+
+          FINAL_FRAPPE_REPO="${{ inputs.frappe_repo }}"
+          [ -z "$FINAL_FRAPPE_REPO" ] && FINAL_FRAPPE_REPO="$BUILD_ENV_FRAPPE_REPO"
+          [ -z "$FINAL_FRAPPE_REPO" ] && FINAL_FRAPPE_REPO="https://github.com/frappe/frappe"
+
+          FINAL_FRAPPE_VERSION="${{ inputs.frappe_version }}"
+          [ -z "$FINAL_FRAPPE_VERSION" ] && FINAL_FRAPPE_VERSION="$BUILD_ENV_FRAPPE_VERSION"
+          [ -z "$FINAL_FRAPPE_VERSION" ] && FINAL_FRAPPE_VERSION="version-15"
+          
+          # --- Part 3: Echo FINAL values to GITHUB_ENV so the build step can use env.VAR_FINAL ---
+          echo "PY_VERSION_FINAL=$FINAL_PY_VERSION" >> $GITHUB_ENV
+          echo "NODEJS_VERSION_FINAL=$FINAL_NODEJS_VERSION" >> $GITHUB_ENV
+          echo "FRAPPE_REPO_FINAL=$FINAL_FRAPPE_REPO" >> $GITHUB_ENV
+          echo "FRAPPE_VERSION_FINAL=$FINAL_FRAPPE_VERSION" >> $GITHUB_ENV
+
+          # --- Part 4: Other variables ---
           IMAGE_TAG_VERSION=$(date +'%Y%m%d')-$(git rev-parse --short HEAD)${{ inputs.image_tag_suffix }}
           echo "IMAGE_TAG=$IMAGE_TAG_VERSION" >> $GITHUB_ENV
           echo "BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> $GITHUB_ENV
           echo "COMMIT_SHA=$(git rev-parse HEAD)" >> $GITHUB_ENV
-          
-          # Load from ci/build.env, allowing workflow inputs to override if provided
-          # This sets them as environment variables for subsequent steps
-          if [ -f ./ci/build.env ]; then
-            echo "Sourcing ci/build.env..."
-            # Filter out comments and empty lines, then export
-            grep -v '^#' ./ci/build.env | grep -v '^\s*$' | while IFS= read -r line; do echo "$line" >> $GITHUB_ENV; done
-          fi
 
-          # Set Python and NodeJS versions from inputs if provided, else use env (from build.env or default)
-          echo "PY_VERSION_FINAL=${{ inputs.py_version || env.PY_VERSION }}" >> $GITHUB_ENV
-          echo "NODEJS_VERSION_FINAL=${{ inputs.nodejs_version || env.NODEJS_VERSION }}" >> $GITHUB_ENV
-          echo "FRAPPE_REPO_FINAL=${{ inputs.frappe_repo || env.FRAPPE_REPO }}" >> $GITHUB_ENV
-          echo "FRAPPE_VERSION_FINAL=${{ inputs.frappe_version || env.FRAPPE_VERSION }}" >> $GITHUB_ENV
-
-          # Prepare apps.json
           if [ ! -f ./ci/apps.json ]; then
             echo "Error: ci/apps.json not found!"
             exit 1
@@ -88,10 +133,12 @@ jobs:
           echo "APPS_JSON_BASE64=$(base64 -w 0 ./ci/apps.json)" >> $GITHUB_ENV
           APPS_HASH=$(sha256sum ./ci/apps.json | cut -d ' ' -f 1)
           echo "APPS_HASH=$APPS_HASH" >> $GITHUB_ENV
-
-          # Construct final image name
-          FINAL_IMAGE_NAME="${{ env.IMAGE_NAME_PREFIX }}-${{ inputs.image_name || env.IMAGE_BASE_NAME }}"
-          echo "FINAL_IMAGE_NAME=$FINAL_IMAGE_NAME" >> $GITHUB_ENV
+          
+          # Construct final image name (ensure IMAGE_NAME_PREFIX and IMAGE_BASE_NAME are in GITHUB_ENV from build.env or set globally)
+          # Assuming IMAGE_NAME_PREFIX and IMAGE_BASE_NAME are loaded into shell vars BUILD_ENV_IMAGE_NAME_PREFIX etc.
+          # Or, if they are simple enough to be directly in GITHUB_ENV from the build.env sourcing:
+          FINAL_IMAGE_NAME_CONSTRUCTED="${{ env.IMAGE_NAME_PREFIX || 'defaultprefix' }}-${{ inputs.image_name || env.IMAGE_BASE_NAME || 'defaultbasename' }}"
+          echo "FINAL_IMAGE_NAME=$FINAL_IMAGE_NAME_CONSTRUCTED" >> $GITHUB_ENV
 
 
       - name: Login to GitHub Container Registry
