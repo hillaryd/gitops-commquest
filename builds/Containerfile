@@ -98,6 +98,7 @@ RUN if [ -n "${APPS_JSON_BASE64}" ]; then \
   fi
 
 USER frappe
+ENV HOME=/home/frappe
 
 ARG FRAPPE_BRANCH=version-15
 ARG FRAPPE_PATH=https://github.com/frappe/frappe
@@ -147,7 +148,6 @@ RUN \
 FROM base AS backend
 
 USER frappe
-ENV HOME=/home/frappe
 
 COPY --from=builder --chown=frappe:frappe /home/frappe/frappe-bench /home/frappe/frappe-bench
 
