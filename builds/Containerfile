@@ -147,6 +147,7 @@ RUN \
 FROM base AS backend
 
 USER frappe
+ENV HOME=/home/frappe
 
 COPY --from=builder --chown=frappe:frappe /home/frappe/frappe-bench /home/frappe/frappe-bench
 
