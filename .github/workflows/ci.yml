@@ -160,7 +160,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=${{ env.APPS_HASH }}-${{ env.FINAL_IMAGE_NAME }}
           # Pass the PAT secret to the Docker build
           secrets: |
-            gh_pat_secret_mount_point=${{ secrets.GH_PAT_PRIVATE_APPS }} # Make sure GH_PAT_PRIVATE_APPS is a repo secret
+            gh_pat_secret_mount_point=${{ secrets.GH_PAT_PRIVATE_APPS }} 
           build-args: |
             "FRAPPE_PATH=${{ env.FRAPPE_REPO_FINAL }}"
             "FRAPPE_BRANCH=${{ env.FRAPPE_VERSION_FINAL }}"

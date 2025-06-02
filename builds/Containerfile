@@ -102,12 +102,7 @@ ENV HOME=/home/frappe
 
 ARG FRAPPE_BRANCH=version-15
 ARG FRAPPE_PATH=https://github.com/frappe/frappe
-RUN \
-  # This --mount directive is for Docker BuildKit.
-  # It makes the secret identified by 'gh_pat_secret_id' in the CI workflow
-  # available at /run/secrets/gh_pat_secret_mount_point inside this RUN command.
-  # --mount=type=secret,id=gh_pat_secret_id,target=/run/secrets/gh_pat_secret_mount_point \
-  \
+RUN --mount=type=secret,id=gh_pat_secret_id,target=/run/secrets/gh_pat_secret_mount_point \
   export GIT_CONFIG_URED=false && \
   if [ -f /run/secrets/gh_pat_secret_mount_point ]; then \
     echo "Configuring Git to use PAT for GitHub HTTPS access..." && \
