@@ -1,4 +1,5 @@
 name: Build Commquest Custom ERPNext Image
+
 on:
   push:
     branches:
@@ -14,43 +15,135 @@ on:
         description: 'Optional suffix for the image tag (e.g., -beta, -rc1)'
         required: false
         type: string
-      # Keeping original inputs for potential override, though build.env is primary
+        default: ''
       image_name:
-        description: 'Image name (e.g., custom-erpnext-commquest)'
+        description: 'Override image name'
         required: false
         type: string
       frappe_repo:
-        description: Frappe repo
+        description: 'Frappe repository URL'
         type: string
         default: 'https://github.com/frappe/frappe'
       frappe_version:
-        description: Frappe branch
+        description: 'Frappe branch/version'
         type: string
         default: 'version-15'
       py_version:
-        description: Python version
+        description: 'Python version'
         type: string
         default: '3.11.9' 
       nodejs_version:
-        description: NodeJS version
+        description: 'NodeJS version'
         type: string
-        default: '20.13.1' 
+        default: '20.19.2'
 
 env:
-  # Default values, can be overridden by ci/build.env or workflow inputs
+  # Defaults - will be overridden by build.env
   REGISTRY: ghcr.io
-  PROJECT_NAMESPACE: ${{ github.repository_owner }} # Uses your GitHub username/org
-  IMAGE_NAME_PREFIX: commquest # Specific to this customer repo
-  IMAGE_BASE_NAME: custom-erpnext # Base name for the image
+  PROJECT_NAMESPACE: ${{ github.repository_owner }}
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Validate Prerequisites
+        run: |
+          # Check required files exist
+          if [ ! -f ./ci/apps.json ]; then
+            echo "❌ Error: ci/apps.json not found!"
+            exit 1
+          fi
+          
+          if [ ! -f ./builds/Containerfile ]; then
+            echo "❌ Error: builds/Containerfile not found!"
+            exit 1
+          fi
+          
+          echo "✅ Prerequisites validated"
+
+      - name: Load Build Configuration
+        id: config
+        run: |
+          # Initialize with defaults
+          REGISTRY="ghcr.io"
+          PROJECT_NAMESPACE="${{ github.repository_owner }}"
+          IMAGE_NAME_PREFIX=""
+          IMAGE_BASE_NAME="custom-erpnext"
+          PY_VERSION="${{ inputs.py_version || '3.11.9' }}"
+          NODEJS_VERSION="${{ inputs.nodejs_version || '20.19.2' }}"
+          FRAPPE_REPO="${{ inputs.frappe_repo || 'https://github.com/frappe/frappe' }}"
+          FRAPPE_VERSION="${{ inputs.frappe_version || 'version-15' }}"
+          
+          # Load from build.env if it exists
+          if [ -f ./ci/build.env ]; then
+            echo "📋 Loading configuration from ci/build.env"
+            while IFS='=' read -r key value; do
+              # Skip comments and empty lines
+              [[ "$key" =~ ^\s*# || -z "$key" ]] && continue
+              # Trim whitespace
+              key=$(echo "$key" | xargs)
+              value=$(echo "$value" | xargs)
+              
+              case "$key" in
+                REGISTRY) REGISTRY="$value" ;;
+                PROJECT_NAMESPACE) PROJECT_NAMESPACE="$value" ;;
+                IMAGE_NAME_PREFIX) IMAGE_NAME_PREFIX="$value" ;;
+                IMAGE_BASE_NAME) IMAGE_BASE_NAME="$value" ;;
+                PY_VERSION) [ -z "${{ inputs.py_version }}" ] && PY_VERSION="$value" ;;
+                NODEJS_VERSION) [ -z "${{ inputs.nodejs_version }}" ] && NODEJS_VERSION="$value" ;;
+                FRAPPE_REPO) [ -z "${{ inputs.frappe_repo }}" ] && FRAPPE_REPO="$value" ;;
+                FRAPPE_VERSION) [ -z "${{ inputs.frappe_version }}" ] && FRAPPE_VERSION="$value" ;;
+              esac
+            done < <(grep -v '^#' ./ci/build.env | grep -v '^\s*
+          
+          # Generate version tag
+          TIMESTAMP=$(date +'%Y%m%d-%H%M')
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          TAG_SUFFIX="${{ inputs.image_tag_suffix }}"
+          IMAGE_TAG="${TIMESTAMP}-${SHORT_SHA}${TAG_SUFFIX}"
+          
+          # Set all outputs
+          echo "REGISTRY=${REGISTRY}" >> $GITHUB_OUTPUT
+          echo "PROJECT_NAMESPACE=${PROJECT_NAMESPACE}" >> $GITHUB_OUTPUT
+          echo "IMAGE_NAME_PREFIX=${IMAGE_NAME_PREFIX}" >> $GITHUB_OUTPUT
+          echo "IMAGE_BASE_NAME=${IMAGE_BASE_NAME}" >> $GITHUB_OUTPUT
+          echo "PY_VERSION=${PY_VERSION}" >> $GITHUB_OUTPUT
+          echo "NODEJS_VERSION=${NODEJS_VERSION}" >> $GITHUB_OUTPUT  
+          echo "FRAPPE_REPO=${FRAPPE_REPO}" >> $GITHUB_OUTPUT
+          echo "FRAPPE_VERSION=${FRAPPE_VERSION}" >> $GITHUB_OUTPUT
+          echo "IMAGE_NAME=${IMAGE_NAME}" >> $GITHUB_OUTPUT
+          echo "IMAGE_TAG=${IMAGE_TAG}" >> $GITHUB_OUTPUT
+          echo "BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> $GITHUB_OUTPUT
+          echo "COMMIT_SHA=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+          
+          # Process apps.json
+          APPS_JSON_BASE64=$(base64 -w 0 ./ci/apps.json)
+          APPS_HASH=$(sha256sum ./ci/apps.json | cut -d ' ' -f 1 | cut -c1-8)
+          echo "APPS_JSON_BASE64=${APPS_JSON_BASE64}" >> $GITHUB_OUTPUT
+          echo "APPS_HASH=${APPS_HASH}" >> $GITHUB_OUTPUT
+          
+          # Final image reference
+          FULL_IMAGE_NAME="${REGISTRY}/${PROJECT_NAMESPACE}/${IMAGE_NAME}:${IMAGE_TAG}"
+          LATEST_IMAGE_NAME="${REGISTRY}/${PROJECT_NAMESPACE}/${IMAGE_NAME}:latest"
+          echo "FULL_IMAGE_NAME=${FULL_IMAGE_NAME}" >> $GITHUB_OUTPUT
+          echo "LATEST_IMAGE_NAME=${LATEST_IMAGE_NAME}" >> $GITHUB_OUTPUT
+          
+          echo "🏗️ Build Configuration:"
+          echo "  Registry: ${REGISTRY}"
+          echo "  Namespace: ${PROJECT_NAMESPACE}" 
+          echo "  Customer: ${IMAGE_NAME_PREFIX}"
+          echo "  Base Name: ${IMAGE_BASE_NAME}"
+          echo "  Full Image Name: ${IMAGE_NAME}"
+          echo "  Python: ${PY_VERSION}"
+          echo "  Node.js: ${NODEJS_VERSION}"
+          echo "  Frappe: ${FRAPPE_VERSION} (${FRAPPE_REPO})"
+          echo "  Final Image: ${FULL_IMAGE_NAME}"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -58,117 +151,207 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Generate Version Tag & Load Build Variables
-        id: vars
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ steps.config.outputs.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and Push Docker Image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./builds
+          file: ./builds/Containerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ${{ steps.config.outputs.FULL_IMAGE_NAME }}
+            ${{ steps.config.outputs.LATEST_IMAGE_NAME }}
+          cache-from: type=gha,scope=${{ steps.config.outputs.IMAGE_NAME }}-${{ steps.config.outputs.APPS_HASH }}
+          cache-to: type=gha,mode=max,scope=${{ steps.config.outputs.IMAGE_NAME }}-${{ steps.config.outputs.APPS_HASH }}
+          secrets: |
+            gh_pat_secret_mount_point=${{ secrets.GH_PAT_PRIVATE_APPS }}
+          build-args: |
+            FRAPPE_PATH=${{ steps.config.outputs.FRAPPE_REPO }}
+            FRAPPE_BRANCH=${{ steps.config.outputs.FRAPPE_VERSION }}
+            PYTHON_VERSION=${{ steps.config.outputs.PY_VERSION }}
+            NODE_VERSION=${{ steps.config.outputs.NODEJS_VERSION }}
+            APPS_JSON_BASE64=${{ steps.config.outputs.APPS_JSON_BASE64 }}
+          labels: |
+            org.opencontainers.image.title=${{ steps.config.outputs.IMAGE_NAME }}
+            org.opencontainers.image.description=Custom ERPNext image for Commquest
+            org.opencontainers.image.url=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ steps.config.outputs.IMAGE_TAG }}
+            org.opencontainers.image.created=${{ steps.config.outputs.BUILD_DATE }}
+            org.opencontainers.image.revision=${{ steps.config.outputs.COMMIT_SHA }}
+            org.opencontainers.image.licenses=MIT
+
+      - name: Image Vulnerability Scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ steps.config.outputs.FULL_IMAGE_NAME }}
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+        continue-on-error: true
+
+      - name: Upload Trivy Scan Results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+        continue-on-error: true
+
+      - name: Build Summary
+        if: always()
         run: |
-          # --- Part 1: Load from ci/build.env into shell variables first ---
-          # And set them to GITHUB_ENV so subsequent STEPS can use them as env.VAR
-          # Initialize with empty strings or defaults if ci/build.env might be missing fields
-          BUILD_ENV_PY_VERSION=""
-          BUILD_ENV_NODEJS_VERSION=""
-          BUILD_ENV_FRAPPE_REPO=""
-          BUILD_ENV_FRAPPE_VERSION=""
-          # ... add others from build.env ...
-
-          if [ -f ./ci/build.env ]; then
-            echo "Sourcing ci/build.env..."
-            # Source into current shell and also into GITHUB_ENV
-            # Using a loop to handle potential spaces in values and ensure clean export
-            while IFS='=' read -r key value; do
-              # Skip comments and empty lines
-              [[ "$key" =~ ^\s*# || -z "$key" ]] && continue
-              # Trim whitespace from key and value (optional but good practice)
-              key=$(echo "$key" | xargs)
-              value=$(echo "$value" | xargs)
-              
-              echo "Read from build.env: $key=$value"
-              echo "$key=$value" >> $GITHUB_ENV # For subsequent steps
-              
-              # Also make available to current script via explicit shell vars
-              case "$key" in
-                PY_VERSION) BUILD_ENV_PY_VERSION="$value" ;;
-                NODEJS_VERSION) BUILD_ENV_NODEJS_VERSION="$value" ;;
-                FRAPPE_REPO) BUILD_ENV_FRAPPE_REPO="$value" ;;
-                FRAPPE_VERSION) BUILD_ENV_FRAPPE_VERSION="$value" ;;
-                # ... add other vars from build.env you need to make decisions on ...
-              esac
-            done < <(grep -v '^#' ./ci/build.env | grep -v '^\s*$') # Process lines from build.env
-          fi
-
-          # --- Part 2: Determine FINAL values using inputs as overrides ---
-          # Use shell parameter expansion for default values
-          FINAL_PY_VERSION="${{ inputs.py_version }}"
-          [ -z "$FINAL_PY_VERSION" ] && FINAL_PY_VERSION="$BUILD_ENV_PY_VERSION"
-          # Add a hardcoded default if both input and build.env are empty (optional)
-          [ -z "$FINAL_PY_VERSION" ] && FINAL_PY_VERSION="3.11.9" # Example hardcoded default
-
-          FINAL_NODEJS_VERSION="${{ inputs.nodejs_version }}"
-          [ -z "$FINAL_NODEJS_VERSION" ] && FINAL_NODEJS_VERSION="$BUILD_ENV_NODEJS_VERSION"
-          [ -z "$FINAL_NODEJS_VERSION" ] && FINAL_NODEJS_VERSION="20.13.1"
-
-          FINAL_FRAPPE_REPO="${{ inputs.frappe_repo }}"
-          [ -z "$FINAL_FRAPPE_REPO" ] && FINAL_FRAPPE_REPO="$BUILD_ENV_FRAPPE_REPO"
-          [ -z "$FINAL_FRAPPE_REPO" ] && FINAL_FRAPPE_REPO="https://github.com/frappe/frappe"
-
-          FINAL_FRAPPE_VERSION="${{ inputs.frappe_version }}"
-          [ -z "$FINAL_FRAPPE_VERSION" ] && FINAL_FRAPPE_VERSION="$BUILD_ENV_FRAPPE_VERSION"
-          [ -z "$FINAL_FRAPPE_VERSION" ] && FINAL_FRAPPE_VERSION="version-15"
+          echo "## 🚀 Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "| Setting | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Customer** | ${{ steps.config.outputs.IMAGE_NAME_PREFIX }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Image** | \`${{ steps.config.outputs.FULL_IMAGE_NAME }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Python** | ${{ steps.config.outputs.PY_VERSION }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Node.js** | ${{ steps.config.outputs.NODEJS_VERSION }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Frappe** | ${{ steps.config.outputs.FRAPPE_VERSION }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Apps Hash** | ${{ steps.config.outputs.APPS_HASH }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Commit** | ${{ steps.config.outputs.COMMIT_SHA }} |" >> $GITHUB_STEP_SUMMARY
           
-          # --- Part 3: Echo FINAL values to GITHUB_ENV so the build step can use env.VAR_FINAL ---
-          echo "PY_VERSION_FINAL=$FINAL_PY_VERSION" >> $GITHUB_ENV
-          echo "NODEJS_VERSION_FINAL=$FINAL_NODEJS_VERSION" >> $GITHUB_ENV
-          echo "FRAPPE_REPO_FINAL=$FINAL_FRAPPE_REPO" >> $GITHUB_ENV
-          echo "FRAPPE_VERSION_FINAL=$FINAL_FRAPPE_VERSION" >> $GITHUB_ENV
-
-          # --- Part 4: Other variables ---
-          IMAGE_TAG_VERSION=$(date +'%Y%m%d')-$(git rev-parse --short HEAD)${{ inputs.image_tag_suffix }}
-          echo "IMAGE_TAG=$IMAGE_TAG_VERSION" >> $GITHUB_ENV
-          echo "BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> $GITHUB_ENV
-          echo "COMMIT_SHA=$(git rev-parse HEAD)" >> $GITHUB_ENV
-
-          if [ ! -f ./ci/apps.json ]; then
-            echo "Error: ci/apps.json not found!"
-            exit 1
+          if [ "${{ job.status }}" == "success" ]; then
+            echo "✅ **Status**: Build completed successfully" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### 📦 Pull Command" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+            echo "docker pull ${{ steps.config.outputs.FULL_IMAGE_NAME }}" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **Status**: Build failed" >> $GITHUB_STEP_SUMMARY
+          fi)
           fi
-          echo "APPS_JSON_BASE64=$(base64 -w 0 ./ci/apps.json)" >> $GITHUB_ENV
-          APPS_HASH=$(sha256sum ./ci/apps.json | cut -d ' ' -f 1)
-          echo "APPS_HASH=$APPS_HASH" >> $GITHUB_ENV
           
-          # Construct final image name (ensure IMAGE_NAME_PREFIX and IMAGE_BASE_NAME are in GITHUB_ENV from build.env or set globally)
-          # Assuming IMAGE_NAME_PREFIX and IMAGE_BASE_NAME are loaded into shell vars BUILD_ENV_IMAGE_NAME_PREFIX etc.
-          # Or, if they are simple enough to be directly in GITHUB_ENV from the build.env sourcing:
-          FINAL_IMAGE_NAME_CONSTRUCTED="${{ env.IMAGE_NAME_PREFIX || 'defaultprefix' }}-${{ inputs.image_name || env.IMAGE_BASE_NAME || 'defaultbasename' }}"
-          echo "FINAL_IMAGE_NAME=$FINAL_IMAGE_NAME_CONSTRUCTED" >> $GITHUB_ENV
+          # Construct customer-specific image name
+          if [ -n "${{ inputs.image_name }}" ]; then
+            IMAGE_NAME="${{ inputs.image_name }}"
+          else
+            # Build name: prefix-basename (e.g., commquest-custom-erpnext)
+            if [ -n "${IMAGE_NAME_PREFIX}" ]; then
+              IMAGE_NAME="${IMAGE_NAME_PREFIX}-${IMAGE_BASE_NAME}"
+            else
+              IMAGE_NAME="${IMAGE_BASE_NAME}"
+            fi
+          fi
+          
+          # Generate version tag
+          TIMESTAMP=$(date +'%Y%m%d-%H%M')
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          TAG_SUFFIX="${{ inputs.image_tag_suffix }}"
+          IMAGE_TAG="${TIMESTAMP}-${SHORT_SHA}${TAG_SUFFIX}"
+          
+          # Set outputs
+          echo "PY_VERSION=${PY_VERSION}" >> $GITHUB_OUTPUT
+          echo "NODEJS_VERSION=${NODEJS_VERSION}" >> $GITHUB_OUTPUT  
+          echo "FRAPPE_REPO=${FRAPPE_REPO}" >> $GITHUB_OUTPUT
+          echo "FRAPPE_VERSION=${FRAPPE_VERSION}" >> $GITHUB_OUTPUT
+          echo "IMAGE_NAME=${IMAGE_NAME}" >> $GITHUB_OUTPUT
+          echo "IMAGE_TAG=${IMAGE_TAG}" >> $GITHUB_OUTPUT
+          echo "BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> $GITHUB_OUTPUT
+          echo "COMMIT_SHA=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+          
+          # Process apps.json
+          APPS_JSON_BASE64=$(base64 -w 0 ./ci/apps.json)
+          APPS_HASH=$(sha256sum ./ci/apps.json | cut -d ' ' -f 1 | cut -c1-8)
+          echo "APPS_JSON_BASE64=${APPS_JSON_BASE64}" >> $GITHUB_OUTPUT
+          echo "APPS_HASH=${APPS_HASH}" >> $GITHUB_OUTPUT
+          
+          # Final image reference
+          FULL_IMAGE_NAME="${{ env.REGISTRY }}/${{ env.PROJECT_NAMESPACE }}/${IMAGE_NAME}:${IMAGE_TAG}"
+          echo "FULL_IMAGE_NAME=${FULL_IMAGE_NAME}" >> $GITHUB_OUTPUT
+          
+          echo "🏗️ Build Configuration:"
+          echo "  Python: ${PY_VERSION}"
+          echo "  Node.js: ${NODEJS_VERSION}"
+          echo "  Frappe: ${FRAPPE_VERSION}"
+          echo "  Repository: ${FRAPPE_REPO}"
+          echo "  Image: ${FULL_IMAGE_NAME}"
 
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }} # GITHUB_TOKEN has permissions to push to ghcr.io for your repo
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and Push Docker Image
         uses: docker/build-push-action@v5
         with:
-          context: ./builds # Context is your local 'builds' directory
-          file: ./builds/Containerfile # Path to your local, modified Dockerfile
+          context: ./builds
+          file: ./builds/Containerfile
           push: true
+          platforms: linux/amd64,linux/arm64
           tags: |
-            ${{ env.REGISTRY }}/${{ env.PROJECT_NAMESPACE }}/${{ env.FINAL_IMAGE_NAME }}:${{ env.IMAGE_TAG }}
-          cache-from: type=gha,scope=${{ env.APPS_HASH }}-${{ env.FINAL_IMAGE_NAME }}
-          cache-to: type=gha,mode=max,scope=${{ env.APPS_HASH }}-${{ env.FINAL_IMAGE_NAME }}
-          # Pass the PAT secret to the Docker build
+            ${{ steps.config.outputs.FULL_IMAGE_NAME }}
+            ${{ env.REGISTRY }}/${{ env.PROJECT_NAMESPACE }}/${{ steps.config.outputs.IMAGE_NAME }}:latest
+          cache-from: type=gha,scope=${{ steps.config.outputs.IMAGE_NAME }}-${{ steps.config.outputs.APPS_HASH }}
+          cache-to: type=gha,mode=max,scope=${{ steps.config.outputs.IMAGE_NAME }}-${{ steps.config.outputs.APPS_HASH }}
           secrets: |
-            gh_pat_secret_mount_point=${{ secrets.GH_PAT_PRIVATE_APPS }} 
+            gh_pat_secret_mount_point=${{ secrets.GH_PAT_PRIVATE_APPS }}
           build-args: |
-            "FRAPPE_PATH=${{ env.FRAPPE_REPO_FINAL }}"
-            "FRAPPE_BRANCH=${{ env.FRAPPE_VERSION_FINAL }}"
-            "PYTHON_VERSION=${{ env.PY_VERSION_FINAL }}"
-            "NODE_VERSION=${{ env.NODEJS_VERSION_FINAL }}"
-            "APPS_JSON_BASE64=${{ env.APPS_JSON_BASE64 }}"
-            "CACHE_BUST=${{ env.BUILD_DATE }}" # For cache busting if needed
+            FRAPPE_PATH=${{ steps.config.outputs.FRAPPE_REPO }}
+            FRAPPE_BRANCH=${{ steps.config.outputs.FRAPPE_VERSION }}
+            PYTHON_VERSION=${{ steps.config.outputs.PY_VERSION }}
+            NODE_VERSION=${{ steps.config.outputs.NODEJS_VERSION }}
+            APPS_JSON_BASE64=${{ steps.config.outputs.APPS_JSON_BASE64 }}
           labels: |
-            org.opencontainers.image.created=${{ env.BUILD_DATE }}
-            org.opencontainers.image.revision=${{ env.COMMIT_SHA }}
-            org.opencontainers.image.version=${{ env.IMAGE_TAG }}
+            org.opencontainers.image.title=${{ steps.config.outputs.IMAGE_NAME }}
+            org.opencontainers.image.description=Custom ERPNext image for Commquest
+            org.opencontainers.image.url=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ steps.config.outputs.IMAGE_TAG }}
+            org.opencontainers.image.created=${{ steps.config.outputs.BUILD_DATE }}
+            org.opencontainers.image.revision=${{ steps.config.outputs.COMMIT_SHA }}
+            org.opencontainers.image.licenses=MIT
+
+      - name: Image Vulnerability Scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ steps.config.outputs.FULL_IMAGE_NAME }}
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+        continue-on-error: true
+
+      - name: Upload Trivy Scan Results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+        continue-on-error: true
+
+      - name: Build Summary
+        if: always()
+        run: |
+          echo "## 🚀 Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "| Setting | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Image** | \`${{ steps.config.outputs.FULL_IMAGE_NAME }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Python** | ${{ steps.config.outputs.PY_VERSION }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Node.js** | ${{ steps.config.outputs.NODEJS_VERSION }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Frappe** | ${{ steps.config.outputs.FRAPPE_VERSION }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Apps Hash** | ${{ steps.config.outputs.APPS_HASH }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Commit** | ${{ steps.config.outputs.COMMIT_SHA }} |" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ job.status }}" == "success" ]; then
+            echo "✅ **Status**: Build completed successfully" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### 📦 Pull Command" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+            echo "docker pull ${{ steps.config.outputs.FULL_IMAGE_NAME }}" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **Status**: Build failed" >> $GITHUB_STEP_SUMMARY
+          fi

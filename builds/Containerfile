@@ -94,7 +94,7 @@ RUN apt-get update \
 
 ARG APPS_JSON_BASE64
 RUN if [ -n "${APPS_JSON_BASE64}" ]; then \
-    mkdir /opt/frappe && echo "${APPS_JSON_BASE64}" | base64 -d > /opt/frappe/apps.json; \
+    mkdir -p /opt/frappe && echo "${APPS_JSON_BASE64}" | base64 -d > /opt/frappe/apps.json; \
   fi
 
 USER frappe
@@ -102,23 +102,33 @@ ENV HOME=/home/frappe
 
 ARG FRAPPE_BRANCH=version-15
 ARG FRAPPE_PATH=https://github.com/frappe/frappe
+
+# Fixed Git PAT configuration
 RUN --mount=type=secret,id=gh_pat_secret_id,target=/run/secrets/gh_pat_secret_mount_point \
-  export GIT_CONFIG_URED=false && \
+  set -e && \
+  GIT_CONFIG_USED=false && \
+  \
+  # Configure Git with PAT if secret is available
   if [ -f /run/secrets/gh_pat_secret_mount_point ]; then \
     echo "Configuring Git to use PAT for GitHub HTTPS access..." && \
-    git config --global url."https://oauth2:$(cat /run/secrets/gh_pat_secret_mount_point)@github.com/".insteadOf "https://github.com/" && \
-    export GIT_CONFIG_URED=true && \
-    echo "Git PAT configured." ; \
+    PAT_TOKEN=$(cat /run/secrets/gh_pat_secret_mount_point) && \
+    git config --global url."https://oauth2:${PAT_TOKEN}@github.com/".insteadOf "https://github.com/" && \
+    GIT_CONFIG_USED=true && \
+    echo "Git PAT configured successfully." ; \
   else \
-    echo "PAT secret not found or not mounted, proceeding without specific Git auth for private repos. Cloning private repos will likely fail." ; \
+    echo "Warning: PAT secret not found. Private repo access may fail." ; \
   fi && \
   \
-  # Proceed with bench init
-  export APP_INSTALL_ARGS="" && \
-  if [ -n "${APPS_JSON_BASE64}" ]; then \
-    export APP_INSTALL_ARGS="--apps_path=/opt/frappe/apps.json"; \
+  # Set up apps install arguments
+  APP_INSTALL_ARGS="" && \
+  if [ -n "${APPS_JSON_BASE64}" ] && [ -f /opt/frappe/apps.json ]; then \
+    echo "Using apps.json for installation" && \
+    APP_INSTALL_ARGS="--apps_path=/opt/frappe/apps.json"; \
   fi && \
-  bench init ${APP_INSTALL_ARGS}\
+  \
+  # Initialize bench
+  echo "Initializing frappe-bench..." && \
+  bench init ${APP_INSTALL_ARGS} \
     --frappe-branch=${FRAPPE_BRANCH} \
     --frappe-path=${FRAPPE_PATH} \
     --no-procfile \
@@ -127,18 +137,18 @@ RUN --mount=type=secret,id=gh_pat_secret_id,target=/run/secrets/gh_pat_secret_mo
     --verbose \
     /home/frappe/frappe-bench && \
   \
-  # Unset the Git configuration immediately after bench init/get-app is done
-  if [ "$GIT_CONFIG_URED" = true ]; then \
-    echo "Unsetting Git PAT configuration..." && \
-    git config --global --unset-all url."https://github.com/".insteadOf || true && \
-    git config --global --remove-section url."https://oauth2:$(cat /run/secrets/gh_pat_secret_mount_point)@github.com/" || true && \
-    echo "Git PAT unconfigured." ; \
+  # Clean up Git configuration immediately after
+  if [ "$GIT_CONFIG_USED" = "true" ]; then \
+    echo "Cleaning up Git PAT configuration..." && \
+    git config --global --remove-section url || true && \
+    echo "Git PAT configuration cleaned up." ; \
   fi && \
   \
-  # Rest of the original command
+  # Finalize setup
   cd /home/frappe/frappe-bench && \
   echo "{}" > sites/common_site_config.json && \
-  find apps -mindepth 1 -path "*/.git" | xargs rm -fr
+  find apps -mindepth 1 -path "*/.git" -type d -exec rm -rf {} + 2>/dev/null || true && \
+  echo "Frappe bench initialization completed successfully."
 
 FROM base AS backend
 
@@ -148,11 +158,16 @@ COPY --from=builder --chown=frappe:frappe /home/frappe/frappe-bench /home/frappe
 
 WORKDIR /home/frappe/frappe-bench
 
-# Removed /sites/assets
 VOLUME [ \
   "/home/frappe/frappe-bench/sites", \
   "/home/frappe/frappe-bench/logs" \
 ]
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+  CMD curl -f http://localhost:8000/api/method/ping || exit 1
+
+EXPOSE 8000
 
 CMD [ \
   "/home/frappe/frappe-bench/env/bin/gunicorn", \
