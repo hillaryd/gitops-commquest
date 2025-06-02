@@ -70,6 +70,8 @@ jobs:
       - name: Load Build Configuration
         id: config
         run: |
+          set -e
+          
           # Initialize with defaults
           REGISTRY="ghcr.io"
           PROJECT_NAMESPACE="${{ github.repository_owner }}"
@@ -90,6 +92,8 @@ jobs:
               key=$(echo "$key" | xargs)
               value=$(echo "$value" | xargs)
               
+              echo "Loading: $key=$value"
+              
               case "$key" in
                 REGISTRY) REGISTRY="$value" ;;
                 PROJECT_NAMESPACE) PROJECT_NAMESPACE="$value" ;;
@@ -100,12 +104,25 @@ jobs:
                 FRAPPE_REPO) [ -z "${{ inputs.frappe_repo }}" ] && FRAPPE_REPO="$value" ;;
                 FRAPPE_VERSION) [ -z "${{ inputs.frappe_version }}" ] && FRAPPE_VERSION="$value" ;;
               esac
-            done < <(grep -v '^#' ./ci/build.env | grep -v '^\s*
+            done < <(grep -v '^#' ./ci/build.env | grep -v '^\s*$')
+          fi
+          
+          # Construct customer-specific image name
+          if [ -n "${{ inputs.image_name }}" ]; then
+            IMAGE_NAME="${{ inputs.image_name }}"
+          else
+            # Build name: prefix-basename (e.g., commquest-custom-erpnext)
+            if [ -n "${IMAGE_NAME_PREFIX}" ]; then
+              IMAGE_NAME="${IMAGE_NAME_PREFIX}-${IMAGE_BASE_NAME}"
+            else
+              IMAGE_NAME="${IMAGE_BASE_NAME}"
+            fi
+          fi
           
           # Generate version tag
           TIMESTAMP=$(date +'%Y%m%d-%H%M')
           SHORT_SHA=$(git rev-parse --short HEAD)
-          TAG_SUFFIX="${{ inputs.image_tag_suffix }}"
+          TAG_SUFFIX="${{ inputs.image_tag_suffix || '' }}"
           IMAGE_TAG="${TIMESTAMP}-${SHORT_SHA}${TAG_SUFFIX}"
           
           # Set all outputs
@@ -180,28 +197,13 @@ jobs:
             APPS_JSON_BASE64=${{ steps.config.outputs.APPS_JSON_BASE64 }}
           labels: |
             org.opencontainers.image.title=${{ steps.config.outputs.IMAGE_NAME }}
-            org.opencontainers.image.description=Custom ERPNext image for Commquest
+            org.opencontainers.image.description=Custom ERPNext image for ${{ steps.config.outputs.IMAGE_NAME_PREFIX }}
             org.opencontainers.image.url=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.version=${{ steps.config.outputs.IMAGE_TAG }}
             org.opencontainers.image.created=${{ steps.config.outputs.BUILD_DATE }}
             org.opencontainers.image.revision=${{ steps.config.outputs.COMMIT_SHA }}
             org.opencontainers.image.licenses=MIT
-
-      - name: Image Vulnerability Scan
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: ${{ steps.config.outputs.FULL_IMAGE_NAME }}
-          format: 'sarif'
-          output: 'trivy-results.sarif'
-        continue-on-error: true
-
-      - name: Upload Trivy Scan Results
-        uses: github/codeql-action/upload-sarif@v3
-        if: always()
-        with:
-          sarif_file: 'trivy-results.sarif'
-        continue-on-error: true
 
       - name: Build Summary
         if: always()
@@ -231,132 +233,4 @@ jobs:
             echo "❌ **Status**: Build failed" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "Check the build logs above for details." >> $GITHUB_STEP_SUMMARY
-          fi)
-          fi
-          
-          # Construct customer-specific image name
-          if [ -n "${{ inputs.image_name }}" ]; then
-            IMAGE_NAME="${{ inputs.image_name }}"
-          else
-            # Build name: prefix-basename (e.g., commquest-custom-erpnext)
-            if [ -n "${IMAGE_NAME_PREFIX}" ]; then
-              IMAGE_NAME="${IMAGE_NAME_PREFIX}-${IMAGE_BASE_NAME}"
-            else
-              IMAGE_NAME="${IMAGE_BASE_NAME}"
-            fi
-          fi
-          
-          # Generate version tag
-          TIMESTAMP=$(date +'%Y%m%d-%H%M')
-          SHORT_SHA=$(git rev-parse --short HEAD)
-          TAG_SUFFIX="${{ inputs.image_tag_suffix }}"
-          IMAGE_TAG="${TIMESTAMP}-${SHORT_SHA}${TAG_SUFFIX}"
-          
-          # Set outputs
-          echo "PY_VERSION=${PY_VERSION}" >> $GITHUB_OUTPUT
-          echo "NODEJS_VERSION=${NODEJS_VERSION}" >> $GITHUB_OUTPUT  
-          echo "FRAPPE_REPO=${FRAPPE_REPO}" >> $GITHUB_OUTPUT
-          echo "FRAPPE_VERSION=${FRAPPE_VERSION}" >> $GITHUB_OUTPUT
-          echo "IMAGE_NAME=${IMAGE_NAME}" >> $GITHUB_OUTPUT
-          echo "IMAGE_TAG=${IMAGE_TAG}" >> $GITHUB_OUTPUT
-          echo "BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> $GITHUB_OUTPUT
-          echo "COMMIT_SHA=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
-          
-          # Process apps.json
-          APPS_JSON_BASE64=$(base64 -w 0 ./ci/apps.json)
-          APPS_HASH=$(sha256sum ./ci/apps.json | cut -d ' ' -f 1 | cut -c1-8)
-          echo "APPS_JSON_BASE64=${APPS_JSON_BASE64}" >> $GITHUB_OUTPUT
-          echo "APPS_HASH=${APPS_HASH}" >> $GITHUB_OUTPUT
-          
-          # Final image reference
-          FULL_IMAGE_NAME="${{ env.REGISTRY }}/${{ env.PROJECT_NAMESPACE }}/${IMAGE_NAME}:${IMAGE_TAG}"
-          echo "FULL_IMAGE_NAME=${FULL_IMAGE_NAME}" >> $GITHUB_OUTPUT
-          
-          echo "🏗️ Build Configuration:"
-          echo "  Python: ${PY_VERSION}"
-          echo "  Node.js: ${NODEJS_VERSION}"
-          echo "  Frappe: ${FRAPPE_VERSION}"
-          echo "  Repository: ${FRAPPE_REPO}"
-          echo "  Image: ${FULL_IMAGE_NAME}"
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and Push Docker Image
-        uses: docker/build-push-action@v5
-        with:
-          context: ./builds
-          file: ./builds/Containerfile
-          push: true
-          platforms: linux/amd64,linux/arm64
-          tags: |
-            ${{ steps.config.outputs.FULL_IMAGE_NAME }}
-            ${{ env.REGISTRY }}/${{ env.PROJECT_NAMESPACE }}/${{ steps.config.outputs.IMAGE_NAME }}:latest
-          cache-from: type=gha,scope=${{ steps.config.outputs.IMAGE_NAME }}-${{ steps.config.outputs.APPS_HASH }}
-          cache-to: type=gha,mode=max,scope=${{ steps.config.outputs.IMAGE_NAME }}-${{ steps.config.outputs.APPS_HASH }}
-          secrets: |
-            gh_pat_secret_mount_point=${{ secrets.GH_PAT_PRIVATE_APPS }}
-          build-args: |
-            FRAPPE_PATH=${{ steps.config.outputs.FRAPPE_REPO }}
-            FRAPPE_BRANCH=${{ steps.config.outputs.FRAPPE_VERSION }}
-            PYTHON_VERSION=${{ steps.config.outputs.PY_VERSION }}
-            NODE_VERSION=${{ steps.config.outputs.NODEJS_VERSION }}
-            APPS_JSON_BASE64=${{ steps.config.outputs.APPS_JSON_BASE64 }}
-          labels: |
-            org.opencontainers.image.title=${{ steps.config.outputs.IMAGE_NAME }}
-            org.opencontainers.image.description=Custom ERPNext image for Commquest
-            org.opencontainers.image.url=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.version=${{ steps.config.outputs.IMAGE_TAG }}
-            org.opencontainers.image.created=${{ steps.config.outputs.BUILD_DATE }}
-            org.opencontainers.image.revision=${{ steps.config.outputs.COMMIT_SHA }}
-            org.opencontainers.image.licenses=MIT
-
-      - name: Image Vulnerability Scan
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: ${{ steps.config.outputs.FULL_IMAGE_NAME }}
-          format: 'sarif'
-          output: 'trivy-results.sarif'
-        continue-on-error: true
-
-      - name: Upload Trivy Scan Results
-        uses: github/codeql-action/upload-sarif@v3
-        if: always()
-        with:
-          sarif_file: 'trivy-results.sarif'
-        continue-on-error: true
-
-      - name: Build Summary
-        if: always()
-        run: |
-          echo "## 🚀 Build Summary" >> $GITHUB_STEP_SUMMARY
-          echo "| Setting | Value |" >> $GITHUB_STEP_SUMMARY
-          echo "|---------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| **Image** | \`${{ steps.config.outputs.FULL_IMAGE_NAME }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Python** | ${{ steps.config.outputs.PY_VERSION }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Node.js** | ${{ steps.config.outputs.NODEJS_VERSION }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Frappe** | ${{ steps.config.outputs.FRAPPE_VERSION }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Apps Hash** | ${{ steps.config.outputs.APPS_HASH }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Commit** | ${{ steps.config.outputs.COMMIT_SHA }} |" >> $GITHUB_STEP_SUMMARY
-          
-          if [ "${{ job.status }}" == "success" ]; then
-            echo "✅ **Status**: Build completed successfully" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "### 📦 Pull Command" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
-            echo "docker pull ${{ steps.config.outputs.FULL_IMAGE_NAME }}" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "❌ **Status**: Build failed" >> $GITHUB_STEP_SUMMARY
           fi
