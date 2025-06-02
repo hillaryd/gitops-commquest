@@ -38,7 +38,7 @@ on:
         default: '20.19.2'
 
 env:
-  # Defaults - will be overridden by build.env
+  # Defaults - will be overridden by build.env file
   REGISTRY: ghcr.io
   PROJECT_NAMESPACE: ${{ github.repository_owner }}
 
