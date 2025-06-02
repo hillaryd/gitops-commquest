@@ -209,15 +209,18 @@ jobs:
           echo "## 🚀 Build Summary" >> $GITHUB_STEP_SUMMARY
           echo "| Setting | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|---------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| **Customer** | ${{ steps.config.outputs.IMAGE_NAME_PREFIX }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Customer** | ${{ steps.config.outputs.IMAGE_NAME_PREFIX || 'default' }} |" >> $GITHUB_STEP_SUMMARY
           echo "| **Image** | \`${{ steps.config.outputs.FULL_IMAGE_NAME }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| **Python** | ${{ steps.config.outputs.PY_VERSION }} |" >> $GITHUB_STEP_SUMMARY
           echo "| **Node.js** | ${{ steps.config.outputs.NODEJS_VERSION }} |" >> $GITHUB_STEP_SUMMARY
           echo "| **Frappe** | ${{ steps.config.outputs.FRAPPE_VERSION }} |" >> $GITHUB_STEP_SUMMARY
           echo "| **Apps Hash** | ${{ steps.config.outputs.APPS_HASH }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Commit** | ${{ steps.config.outputs.COMMIT_SHA }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Commit** | \`${{ steps.config.outputs.COMMIT_SHA }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
           
-          if [ "${{ job.status }}" == "success" ]; then
+          # Check if build was successful
+          BUILD_STATUS="${{ job.status }}"
+          if [ "$BUILD_STATUS" == "success" ]; then
             echo "✅ **Status**: Build completed successfully" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "### 📦 Pull Command" >> $GITHUB_STEP_SUMMARY
@@ -226,6 +229,8 @@ jobs:
             echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
           else
             echo "❌ **Status**: Build failed" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Check the build logs above for details." >> $GITHUB_STEP_SUMMARY
           fi)
           fi
           
